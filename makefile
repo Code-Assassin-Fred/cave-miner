@@ -24,7 +24,7 @@ CXXFLAGS = -I includes -I rayincludes -Wall -fconcepts -std=c++23 -Llib -lraylib
 # --- Source Files ---
 # STUDENTS: Add your group's .cpp files to this list, separated by spaces.
 # Example: GROUP_SRCS = src/player.cpp src/level.cpp src/menu.cpp
-GROUP_SRCS =
+GROUP_SRCS = button.cpp
 SHARED_SRCS = src/cs141random.cpp
 GAME_SRCS = $(SHARED_SRCS) $(GROUP_SRCS) game.cpp
 EXAMPLE_SRCS = $(SHARED_SRCS) examples.cpp
