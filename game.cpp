@@ -1,52 +1,83 @@
 /// @file game.cpp
-/// @brief CS 141 Group Project Base Template
+/// @brief CS 141 Group Project - Cave Miner Game with Rocket Collision & Damage
 
-// For raylib graphics
+// For raylib graphics (raylib-cpp.hpp already includes raylib.h)
 #include "raylib-cpp.hpp"
 
 // C++ Libraries
+#include <algorithm>
+#include <iostream>
 #include <random>
 
-//include button assets to create start menu
-
-
-#include <raylib.h>
-#include "button.hpp"
-#include <iostream>
-
 // User-Created Classes
+#include "button.hpp"
 
 // Targeted namespace inclusions
-using std:: string;
-using std:: random_device; 
-using std:: mt19937; 
-using std:: seed_seq; 
-using std:: uniform_int_distribution; 
+using std::mt19937;
+using std::random_device;
+using std::seed_seq;
+using std::uniform_int_distribution;
 
+// Represents an incoming rocket obstacle
+struct Rocket
+{
+    raylib::Vector2 pos;
+    float speed;
+    float width;
+    float height;
+    bool useAltTexture;
 
+    // Returns the rocket's bounding box for collision checks
+    Rectangle GetHitbox() const
+    {
+        return Rectangle{pos.x, pos.y, width, height};
+    }
+};
 
-int main() 
+// Resets a rocket to the right edge of the screen at a random vertical position
+void ResetRocket(Rocket& rocket, int screenWidth, int screenHeight, mt19937& rng)
+{
+    const float minY = 60.0f;
+    const float maxY = std::max(minY, static_cast<float>(screenHeight) - rocket.height - 10.0f);
+    std::uniform_real_distribution<float> yDist(minY, maxY);
+
+    rocket.pos = raylib::Vector2(static_cast<float>(screenWidth) + 20.0f, yDist(rng));
+    rocket.useAltTexture = !rocket.useAltTexture; // Alternate between RocketA and RocketB
+}
+
+// Resets gameplay state for a fresh run
+void ResetGameState(int& health, bool& isGameOver, bool& isPaused, float& invincibleTimer,
+                    raylib::Vector2& minerPos, float ground, float& velocityY, bool& isJumping,
+                    Rocket& rocket, int screenWidth, int screenHeight, mt19937& rng)
+{
+    health = 3;
+    isGameOver = false;
+    isPaused = false;
+    invincibleTimer = 0.0f;
+    minerPos = raylib::Vector2(300.0f, ground);
+    velocityY = 0.0f;
+    isJumping = false;
+    ResetRocket(rocket, screenWidth, screenHeight, rng);
+}
+
+int main()
 {
     // Define base 16:9 resolution (matches zyBooks/cloud IDE optimal size)
     const int screenWidth = 960;
     const int screenHeight = 540;
-    int currentScreen = 0;
-    float sw = static_cast <float> (screenWidth);
-    float sh = static_cast<float> (screenHeight); 
-    float scaleFactor = 1.0f; 
+    int currentScreen = 0; // 0 = Start Menu, 1 = Gameplay, 2 = Settings
 
-    
     // ==========================================================================
     // OBJECT INSTANTIATION PHASE
     // Useful for objects that do not need to be created within the game loop.
     // ==========================================================================
 
-    // Range with a seuqence 
-    random_device rd; 
+    // Random number generator for sprite costumes and rocket spawn heights
+    random_device rd;
     seed_seq seq{rd(), rd(), rd(), rd(), rd(), rd(), rd(), rd()};
-    mt19937 rng(seq);  
-    uniform_int_distribution <int> costumeDist (0,15); // sprite sheet rows 
-    
+    mt19937 rng(seq);
+    uniform_int_distribution<int> costumeDist(0, 15); // Sprite sheet rows
+
     // Initialize the window using the raylib-cpp wrapper
     raylib::Window window(screenWidth, screenHeight, "CS 141 Group Project");
     window.SetTargetFPS(60);
@@ -54,179 +85,259 @@ int main()
     // Instantiate non-dynamic Text objects
     raylib::Text titleText("Group Project Fall 2026!", 30, raylib::Color::RayWhite());
 
-    //Exit 
-    bool exit = false;  
-
-    //pause check
+    // Game state flags
+    bool exitGame = false;
     bool isPaused = false;
-
-    //menu check
     bool showTutorial = false;
+    bool isGameOver = false;
 
-    raylib:: Texture2D cave ("assets/Preview.png"); 
+    // Load background and obstacle textures
+    raylib::Texture2D cave("assets/Preview.png");
+    raylib::Texture2D startCave("assets/1000054635.png");
+    raylib::Texture2D rocketA("assets/RocketA.png");
+    raylib::Texture2D rocketB("assets/RocketB.png");
 
-    raylib:: Texture2D startCave ("assets/1000054635.png");
-
-
-
-    raylib:: Texture2D rockets ("assets/RocketA.png"); 
-    raylib:: Texture2D rocektB ("assets/RocketB.png"); 
-    raylib:: Texture2D rocks ("assets/IMG_6232.png"); 
-
-    // load menu buttons
-    Button startButton("assets/start button.png", {400,150});
+    // Load menu buttons
+    Button startButton("assets/start button.png", {400, 150});
+    Button exitButton("assets/exit button.png", {400, 250});
     Button optionButton("assets/option button.png", {400, 350});
-    Button exitButton ("assets/exit button.png" , {400,250}); 
 
-    // Load Sprite 
-    raylib::Texture2D minerSheet ("assets/Miners_Square_Right.png"); 
-    const float SpriteSize = static_cast <float> (minerSheet.width) /5.0f; 
+    // Load player sprite sheet (5 columns of square frames)
+    raylib::Texture2D minerSheet("assets/Miners_Square_Right.png");
+    const float SpriteSize = static_cast<float>(minerSheet.width) / 5.0f;
 
-    //load heart 
-    raylib:: Texture2D heart ("assets/Heart.png"); 
-    int health = 3; 
+    // Load heart texture and initialize player health & invulnerability timer
+    raylib::Texture2D heart("assets/Heart.png");
+    const int maxHealth = 3;
+    int health = maxHealth;
+    float invincibleTimer = 0.0f; // Prevents one rocket hit from draining multiple hearts
+    const float invincibleDuration = 1.0f;
+    const float heartScale = 0.2f; // Scales 200x200 heart down to 40x40
 
+    // Configure rocket dimensions and initial spawn
+    const float rocketScale = 0.2f; // Scales 512x256 rocket down to ~102x51
+    Rocket rocket{
+        raylib::Vector2(static_cast<float>(screenWidth) + 20.0f, 0.0f),
+        320.0f,
+        static_cast<float>(rocketA.width) * rocketScale,
+        static_cast<float>(rocketA.height) * rocketScale,
+        false
+    };
+    ResetRocket(rocket, screenWidth, screenHeight, rng);
 
-    // sounds 
-    raylib:: AudioDevice audiodevice; 
-    raylib::Sound jumpingSound ("assets/audio/686523__xupr_e3__mixkit-arcade-game-jump-coin-216.wav");
+    // Load audio
+    raylib::AudioDevice audiodevice;
+    raylib::Sound jumpingSound("assets/audio/686523__xupr_e3__mixkit-arcade-game-jump-coin-216.wav");
 
-    // creating animation state and position 
-    raylib:: Vector2 minerPos(300.0f, screenHeight - SpriteSize); 
-    float speed = 200.0f; 
+    // Player position, movement, and animation state
+    const float ground = static_cast<float>(screenHeight) - SpriteSize;
+    raylib::Vector2 minerPos(300.0f, ground);
+    float speed = 200.0f;
 
-    int costumeRow =0; 
-    int currentFrame =0; 
-    float frameTimer = 0.0f; 
+    int costumeRow = 0;
+    int currentFrame = 0;
+    float frameTimer = 0.0f;
+    const float frameDuration = 0.12f;
 
+    bool isMoving = false;
+    bool facingLeft = true;
 
-    // checks the direction of the sprite 
-    bool isMoving = false; 
-    bool facingLeft = true; 
-
-    // jumping check 
-    bool isJumping = false; 
-    float velocityY = 0.0f; 
-    float jumpSpeed = 650.0f; 
-    float gravity = 1800.0f; 
-    const float ground = screenHeight - SpriteSize; 
-
-
+    // Jumping physics state
+    bool isJumping = false;
+    float velocityY = 0.0f;
+    const float jumpSpeed = 650.0f;
+    const float gravity = 1800.0f;
 
     // MAIN GAME LOOP
-    while (!window.ShouldClose() &&exit == false)
+    while (!window.ShouldClose() && !exitGame)
     {
         // ==========================================
         // PHASE: UPDATE LOGIC & ACT ON USER INPUT
         // ==========================================
+        float deltaTime = window.GetFrameTime();
 
-        float deltaTime = window.GetFrameTime (); 
-
-     //MAIN GAME MENU
-     if (currentScreen == 0){
-
-        //Hannah's work: testing active menu buttons
-        Vector2 mousePosition = GetMousePosition();
-        bool mousePressed = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
-
-        if(startButton.isPressed(mousePosition, mousePressed))
-        {
-            std::cout << "Start Button Pressed";
-            currentScreen = 1; //screen switches to game
-        }
-
-        if (optionButton.isPressed(mousePosition, mousePressed))
-        {
-            currentScreen = 2; //screen switches to settings
-        }
-
-        if(exitButton.isPressed(mousePosition, mousePressed))
-        {
-            exit = true; //game screen closes
-        }
-
-
-        float btnWidth = sw /2.0f;
-        float btnHeight = 20.0f * scaleFactor;
-        float btnX = (sw - btnWidth) / 2.0f;
-        float FontSize = 26.0f * scaleFactor;
-
-        raylib::Rectangle startBounds (btnX, sh / 2.0f - (100.0f * scaleFactor), btnWidth, btnHeight);
-        raylib::Rectangle exitBounds(btnX, sh / 2.0f - (20.f * scaleFactor), btnWidth, btnHeight);
-
-
-        Rectangle buttonBounds {300, 200, 200, 50};
-        Color buttonColor = DARKBLUE;
-        
-       
-     }
-
-        // moves to a random costume 
-        if (raylib:: Keyboard:: IsKeyPressed(KEY_C)){
-            costumeRow = costumeDist(rng); 
-        }
-
-        // reset movement flag everytime 
-        isMoving = false; 
-        
-        // Toggle fullscreen on F11 press
-        if (raylib::Keyboard::IsKeyPressed(KEY_F11)) 
+        // Toggle fullscreen on F11 press from any screen
+        if (raylib::Keyboard::IsKeyPressed(KEY_F11))
         {
             window.ToggleFullscreen();
         }
 
-        // jumping W key 
-        if (raylib:: Keyboard::IsKeyDown (KEY_W)&& !isJumping){
-            velocityY -= jumpSpeed; 
-            isJumping = true; 
-            jumpingSound.Play(); 
-        }
-
-        
-        if (IsKeyPressed(KEY_P)) 
+        if (currentScreen == 0)
         {
-            isPaused = !isPaused;
-        }
+            // Main Menu button handling
+            Vector2 mousePosition = GetMousePosition();
+            bool mousePressed = IsMouseButtonPressed(MOUSE_BUTTON_LEFT);
 
-        // Move Down  //pause check here so if the game is paused sprite movement also stops, if game is NOT paused then sprite movement works
-        if (!isPaused) {
-            if (raylib:: Keyboard:: IsKeyDown (KEY_S)){
-                minerPos.y += speed *deltaTime;
-                isMoving = true; 
+            if (startButton.isPressed(mousePosition, mousePressed))
+            {
+                std::cout << "Start Button Pressed\n";
+                ResetGameState(health, isGameOver, isPaused, invincibleTimer,
+                               minerPos, ground, velocityY, isJumping,
+                               rocket, screenWidth, screenHeight, rng);
+                showTutorial = true; // Show tutorial once when starting Level 1
+                currentScreen = 1;
             }
-
-        // Move left 
-            if (raylib::Keyboard:: IsKeyDown(KEY_A)){
-                minerPos.x -= speed * deltaTime; 
-                isMoving = true; 
-                facingLeft = true; 
+            else if (optionButton.isPressed(mousePosition, mousePressed))
+            {
+                currentScreen = 2; // Switch to settings screen
             }
-
-        // Move right 
-            if(raylib:: Keyboard:: IsKeyDown(KEY_D)){
-                minerPos.x += speed * deltaTime; 
-                isMoving = true;
-                facingLeft = false; 
-            }
-
-
-        // jumping movement 
-        if (isJumping){
-            minerPos.y += velocityY * deltaTime; 
-            velocityY += gravity * deltaTime; 
-        }
-
-        // landing 
-            if (minerPos.y >= ground){
-                minerPos.y = ground; 
-                isJumping = false; 
-                velocityY = 0.0f; 
+            else if (exitButton.isPressed(mousePosition, mousePressed))
+            {
+                exitGame = true; // Close game
             }
         }
+        else if (currentScreen == 1)
+        {
+            // Dismiss tutorial overlay on Enter or Space
+            if (showTutorial)
+            {
+                if (IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_SPACE))
+                {
+                    showTutorial = false;
+                }
+            }
+            else if (isGameOver)
+            {
+                // Handle restart or return to menu on Game Over
+                if (IsKeyPressed(KEY_R))
+                {
+                    ResetGameState(health, isGameOver, isPaused, invincibleTimer,
+                                   minerPos, ground, velocityY, isJumping,
+                                   rocket, screenWidth, screenHeight, rng);
+                }
+                else if (IsKeyPressed(KEY_M))
+                {
+                    ResetGameState(health, isGameOver, isPaused, invincibleTimer,
+                                   minerPos, ground, velocityY, isJumping,
+                                   rocket, screenWidth, screenHeight, rng);
+                    currentScreen = 0;
+                }
+            }
+            else
+            {
+                // Toggle pause with P during active gameplay
+                if (IsKeyPressed(KEY_P))
+                {
+                    isPaused = !isPaused;
+                }
 
-        
-         
-        
+                // Switch to a random costume with C
+                if (raylib::Keyboard::IsKeyPressed(KEY_C))
+                {
+                    costumeRow = costumeDist(rng);
+                }
+
+                if (!isPaused)
+                {
+                    // Reset movement flag each frame
+                    isMoving = false;
+
+                    // Count down post-hit invulnerability timer
+                    if (invincibleTimer > 0.0f)
+                    {
+                        invincibleTimer = std::max(0.0f, invincibleTimer - deltaTime);
+                    }
+
+                    // Jump on W key when grounded
+                    if (raylib::Keyboard::IsKeyDown(KEY_W) && !isJumping)
+                    {
+                        velocityY -= jumpSpeed;
+                        isJumping = true;
+                        jumpingSound.Play();
+                    }
+
+                    // Move left
+                    if (raylib::Keyboard::IsKeyDown(KEY_A))
+                    {
+                        minerPos.x -= speed * deltaTime;
+                        isMoving = true;
+                        facingLeft = true;
+                    }
+
+                    // Move right
+                    if (raylib::Keyboard::IsKeyDown(KEY_D))
+                    {
+                        minerPos.x += speed * deltaTime;
+                        isMoving = true;
+                        facingLeft = false;
+                    }
+
+                    // Keep miner within horizontal screen bounds
+                    minerPos.x = std::max(0.0f, std::min(minerPos.x, static_cast<float>(screenWidth) - SpriteSize));
+
+                    // Apply jump velocity and gravity
+                    if (isJumping)
+                    {
+                        minerPos.y += velocityY * deltaTime;
+                        velocityY += gravity * deltaTime;
+                    }
+
+                    // Snap to ground upon landing
+                    if (minerPos.y >= ground)
+                    {
+                        minerPos.y = ground;
+                        isJumping = false;
+                        velocityY = 0.0f;
+                    }
+
+                    // Advance walk animation frames while moving
+                    if (isMoving)
+                    {
+                        frameTimer += deltaTime;
+                        if (frameTimer >= frameDuration)
+                        {
+                            frameTimer = 0.0f;
+                            currentFrame = (currentFrame + 1) % 5;
+                        }
+                    }
+                    else
+                    {
+                        currentFrame = 0;
+                        frameTimer = 0.0f;
+                    }
+
+                    // Move rocket from right to left across the screen
+                    rocket.pos.x -= rocket.speed * deltaTime;
+
+                    // Respawn rocket if it exits past the left edge of the screen
+                    if (rocket.pos.x + rocket.width < 0.0f)
+                    {
+                        ResetRocket(rocket, screenWidth, screenHeight, rng);
+                    }
+
+                    // Check AABB collision between player and rocket
+                    Rectangle playerRect = {minerPos.x, minerPos.y, SpriteSize, SpriteSize};
+                    Rectangle rocketRect = rocket.GetHitbox();
+
+                    if (CheckCollisionRecs(playerRect, rocketRect))
+                    {
+                        // Apply damage only if player is not currently invulnerable
+                        if (invincibleTimer <= 0.0f)
+                        {
+                            health = std::max(0, health - 1);
+                            invincibleTimer = invincibleDuration;
+
+                            // Respawn rocket immediately so one hit never triggers repeatedly
+                            ResetRocket(rocket, screenWidth, screenHeight, rng);
+
+                            // Trigger Game Over if health is depleted
+                            if (health <= 0)
+                            {
+                                isGameOver = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        else if (currentScreen == 2)
+        {
+            // Exit Settings screen back to Main Menu on C press
+            if (raylib::Keyboard::IsKeyPressed(KEY_C))
+            {
+                currentScreen = 0;
+            }
+        }
 
         // ==========================================
         // PHASE: DRAWING
@@ -234,97 +345,87 @@ int main()
         window.BeginDrawing();
         window.ClearBackground(raylib::Color::Black());
 
-
-       if (currentScreen == 0)
+        if (currentScreen == 0)
         {
-        startCave.Draw(0,0);
-        // MeasureEx() returns a Vector2 containing both width (.x) and height (.y)
-        raylib::Vector2 textDims = titleText.MeasureEx();
-        int titleX = (window.GetWidth() - textDims.x) / 2; 
-        int titleY = 20; 
-        // Invoke the Draw() method on the C++ Text object
-        titleText.Draw(titleX, titleY);
+            startCave.Draw(0, 0);
+            raylib::Vector2 textDims = titleText.MeasureEx();
+            int titleX = (window.GetWidth() - static_cast<int>(textDims.x)) / 2;
+            int titleY = 20;
+            titleText.Draw(titleX, titleY);
 
-        startButton.Draw();
-        optionButton.Draw(); 
-        exitButton.Draw(); 
+            startButton.Draw();
+            optionButton.Draw();
+            exitButton.Draw();
         }
-
-        if (currentScreen == 1) //LEVEL 1 OF GAME 
+        else if (currentScreen == 1)
         {
-        showTutorial = true;
-        cave.Draw(); 
-        
-        if (showTutorial)
-        {
-            DrawRectangle(0,100, screenWidth, 200, BLACK);
-            DrawText("TESTING TUT BUTTON",50,50,50, WHITE);
-        }
-            
-        if(IsKeyPressed(KEY_ENTER) || IsKeyPressed(KEY_SPACE)) 
-        {
-            showTutorial = false;
-        }
-            
-            
+            cave.Draw();
 
-    
+            // Draw active rocket using alternating RocketA / RocketB textures
+            const raylib::Texture2D& activeRocketTex = rocket.useAltTexture ? rocketB : rocketA;
+            activeRocketTex.Draw(rocket.pos, 0.0f, rocketScale, raylib::Color::White());
 
-       
+            // Draw miner sprite (flipped horizontally when facing left, blinking when hit)
+            float drawWidth = facingLeft ? -SpriteSize : SpriteSize;
+            float sourceX = static_cast<float>(currentFrame) * SpriteSize;
+            float sourceY = static_cast<float>(costumeRow) * SpriteSize;
+            raylib::Rectangle sourceRec(sourceX, sourceY, drawWidth, SpriteSize);
 
-        // draw Pause overlay if the game is isPaused
-        if (isPaused)
-        {
-            //semi-transparent Rectangle
-            DrawRectangle(0,0, screenWidth, screenHeight,Fade(BLACK,0.5f));
-            const char* pauseText = "GAME PAUSED";
-            
-            int FontSize = 40;
-            int textWidth = MeasureText(pauseText, FontSize);
-            DrawText(pauseText, (screenWidth - textWidth) / 2, screenHeight / 2 - 20, FontSize, DARKBLUE);
-        }
-
-        for (int i = 0; i < health; ++i)
-        {
-            heart.Draw(window.GetWidth() - 250 + i * 2,-30);
-        }
-        
-        DrawText("Press P to pause", 30,50,30, WHITE);
-        // sprite facing the correct direction when moving 
-        float drawWidth; 
-        if (facingLeft == true){
-            drawWidth =- SpriteSize; 
-        }
-
-        else { 
-            drawWidth = SpriteSize; 
-        }
-        
-
-        float sourceX = currentFrame * SpriteSize; 
-        float sourceY = costumeRow * SpriteSize; 
-
-        raylib:: Rectangle sourceRec (sourceX , sourceY, drawWidth,SpriteSize); 
-        minerSheet.Draw (sourceRec ,minerPos); 
-        }
-
-        if (currentScreen == 2) 
-        {
-            ClearBackground(RAYWHITE);
-            DrawText("This is the option/settings page.",190,200,40, DARKBLUE);
-            DrawText("Here the player can change their skin and put their name on a leaderboard", 50, 100, 40, DARKBLUE);
-            DrawText("Press C to exit", 400, 300, 40, DARKBLUE);
-
-            if (raylib::Keyboard::IsKeyPressed(KEY_C))
+            raylib::Color playerTint = raylib::Color::White();
+            if (invincibleTimer > 0.0f && (static_cast<int>(invincibleTimer * 10.0f) % 2 == 0))
             {
-                currentScreen = 0;
+                playerTint = Fade(RED, 0.5f);
+            }
+            minerSheet.Draw(sourceRec, minerPos, playerTint);
+
+            // Draw health hearts in the top-right corner with clean spacing
+            for (int i = 0; i < health; ++i)
+            {
+                raylib::Vector2 heartPos(static_cast<float>(window.GetWidth()) - 160.0f + static_cast<float>(i) * 48.0f, 15.0f);
+                heart.Draw(heartPos, 0.0f, heartScale, raylib::Color::White());
+            }
+
+            DrawText("Press P to pause", 30, 20, 24, WHITE);
+
+            // Draw tutorial overlay
+            if (showTutorial)
+            {
+                DrawRectangle(0, 120, screenWidth, 240, Fade(BLACK, 0.85f));
+                DrawText("HOW TO PLAY", 60, 145, 34, YELLOW);
+                DrawText("Move: A / D   Jump: W   Switch Costume: C", 60, 200, 24, WHITE);
+                DrawText("Dodge incoming rockets or lose a heart!", 60, 240, 24, WHITE);
+                DrawText("Press ENTER or SPACE to start", 60, 300, 24, GREEN);
+            }
+
+            // Draw pause overlay
+            if (isPaused && !showTutorial && !isGameOver)
+            {
+                DrawRectangle(0, 0, screenWidth, screenHeight, Fade(BLACK, 0.5f));
+                const char* pauseText = "GAME PAUSED";
+                int fontSize = 40;
+                int textWidth = MeasureText(pauseText, fontSize);
+                DrawText(pauseText, (screenWidth - textWidth) / 2, screenHeight / 2 - 20, fontSize, DARKBLUE);
+            }
+
+            // Draw Game Over overlay
+            if (isGameOver)
+            {
+                DrawRectangle(0, 0, screenWidth, screenHeight, Fade(BLACK, 0.7f));
+                const char* gameOverText = "GAME OVER";
+                const char* promptText = "Press R to Restart or M for Main Menu";
+                DrawText(gameOverText, (screenWidth - MeasureText(gameOverText, 50)) / 2, screenHeight / 2 - 50, 50, RED);
+                DrawText(promptText, (screenWidth - MeasureText(promptText, 24)) / 2, screenHeight / 2 + 20, 24, WHITE);
             }
         }
-
-
+        else if (currentScreen == 2)
+        {
+            ClearBackground(RAYWHITE);
+            DrawText("This is the option/settings page.", 190, 200, 40, DARKBLUE);
+            DrawText("Here the player can change their skin and put their name on a leaderboard", 50, 100, 22, DARKBLUE);
+            DrawText("Press C to exit", 350, 300, 36, DARKBLUE);
+        }
 
         window.EndDrawing();
-        
     }
 
     return 0;
