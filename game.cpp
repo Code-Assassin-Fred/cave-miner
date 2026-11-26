@@ -5,9 +5,17 @@
 #include "raylib-cpp.hpp"
 
 // C++ Libraries
+#include <random>
 #include <raylib.h>
 #include "button.hpp"
 #include <iostream>
+
+// Targeted namespace inclusions
+using std::string;
+using std::random_device;
+using std::mt19937;
+using std::seed_seq;
+using std::uniform_int_distribution;
 
 int main() 
 {
@@ -18,6 +26,12 @@ int main()
     float sw = static_cast<float>(screenWidth);
     float sh = static_cast<float>(screenHeight);
     float scaleFactor = 1.0f;
+
+    // Range with a sequence
+    random_device rd;
+    seed_seq seq{rd(), rd(), rd(), rd(), rd(), rd(), rd(), rd()};
+    mt19937 rng(seq);
+    uniform_int_distribution<int> costumeDist(0, 15); // sprite sheet rows
 
     // Initialize the window using the raylib-cpp wrapper
     raylib::Window window(screenWidth, screenHeight, "CS 141 Group Project");
@@ -36,9 +50,38 @@ int main()
     Button optionButton("assets/option button.png", {400, 350});
     Button exitButton("assets/exit button.png", {400, 250});
 
+    // Load Sprite
+    raylib::Texture2D minerSheet("assets/Miners_Square_Right.png");
+    const float SpriteSize = static_cast<float>(minerSheet.width) / 5.0f;
+
+    // sounds
+    raylib::AudioDevice audiodevice;
+    raylib::Sound jumpingSound("assets/audio/686523__xupr_e3__mixkit-arcade-game-jump-coin-216.wav");
+
+    // creating animation state and position
+    raylib::Vector2 minerPos(300.0f, screenHeight - SpriteSize);
+    float speed = 200.0f;
+
+    int costumeRow = 0;
+    int currentFrame = 0;
+    float frameTimer = 0.0f;
+
+    // checks the direction of the sprite
+    bool isMoving = false;
+    bool facingLeft = true;
+
+    // jumping check
+    bool isJumping = false;
+    float velocityY = 0.0f;
+    float jumpSpeed = 650.0f;
+    float gravity = 1800.0f;
+    const float ground = screenHeight - SpriteSize;
+
     // MAIN GAME LOOP
     while (!window.ShouldClose() && exit == false)
     {
+        float deltaTime = window.GetFrameTime();
+
         // MAIN GAME MENU
         if (currentScreen == 0)
         {
@@ -62,10 +105,62 @@ int main()
             }
         }
 
+        // moves to a random costume
+        if (raylib::Keyboard::IsKeyPressed(KEY_C))
+        {
+            costumeRow = costumeDist(rng);
+        }
+
+        // reset movement flag everytime
+        isMoving = false;
+
         // Toggle fullscreen on F11 press
         if (raylib::Keyboard::IsKeyPressed(KEY_F11)) 
         {
             window.ToggleFullscreen();
+        }
+
+        // jumping W key
+        if (raylib::Keyboard::IsKeyDown(KEY_W) && !isJumping)
+        {
+            velocityY -= jumpSpeed;
+            isJumping = true;
+            jumpingSound.Play();
+        }
+
+        if (raylib::Keyboard::IsKeyDown(KEY_S))
+        {
+            minerPos.y += speed * deltaTime;
+            isMoving = true;
+        }
+
+        if (raylib::Keyboard::IsKeyDown(KEY_A))
+        {
+            minerPos.x -= speed * deltaTime;
+            isMoving = true;
+            facingLeft = true;
+        }
+
+        if (raylib::Keyboard::IsKeyDown(KEY_D))
+        {
+            minerPos.x += speed * deltaTime;
+            isMoving = true;
+            facingLeft = false;
+        }
+
+        // jumping movement
+        if (isJumping)
+        {
+            minerPos.y += velocityY * deltaTime;
+            velocityY += gravity * deltaTime;
+        }
+
+        // landing
+        if (minerPos.y >= ground)
+        {
+            minerPos.y = ground;
+            isJumping = false;
+            velocityY = 0.0f;
         }
 
         // ==========================================
@@ -85,6 +180,25 @@ int main()
             startButton.Draw();
             optionButton.Draw();
             exitButton.Draw();
+        }
+
+        if (currentScreen == 1)
+        {
+            float drawWidth;
+            if (facingLeft == true)
+            {
+                drawWidth = -SpriteSize;
+            }
+            else
+            {
+                drawWidth = SpriteSize;
+            }
+
+            float sourceX = currentFrame * SpriteSize;
+            float sourceY = costumeRow * SpriteSize;
+
+            raylib::Rectangle sourceRec(sourceX, sourceY, drawWidth, SpriteSize);
+            minerSheet.Draw(sourceRec, minerPos);
         }
 
         if (currentScreen == 2)
